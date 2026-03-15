@@ -252,9 +252,7 @@
         attribution: "&copy; OpenStreetMap contributors",
       }).addTo(map);
 
-      // Static concept markers until live GTFS coordinates are integrated.
-      L.marker([43.8992, -78.8688]).addTo(map).bindPopup("Front Door").openPopup();
-      L.marker([43.8948, -78.8623]).addTo(map).bindPopup("Rear Door");
+      const journeyLayer = L.layerGroup().addTo(map);
 
       function toLocalTime(unixTimestamp) {
         if (typeof unixTimestamp !== "number") {
@@ -299,6 +297,56 @@
           .join("");
       }
 
+      function hasValidCoordinates(journey) {
+        return (
+          typeof journey.boarding_lat === "number" &&
+          typeof journey.boarding_lon === "number" &&
+          typeof journey.alighting_lat === "number" &&
+          typeof journey.alighting_lon === "number"
+        );
+      }
+
+      function renderJourneyMap(journeys) {
+        journeyLayer.clearLayers();
+
+        const bounds = [];
+        journeys.filter(hasValidCoordinates).forEach((journey) => {
+          const boarding = [journey.boarding_lat, journey.boarding_lon];
+          const alighting = [journey.alighting_lat, journey.alighting_lon];
+
+          const boardingMarker = L.circleMarker(boarding, {
+            radius: 6,
+            color: "#22c55e",
+            fillColor: "#22c55e",
+            fillOpacity: 0.95,
+            weight: 2,
+          }).bindPopup(`Boarding: ${journey.mac_hash || "Unknown"}`);
+
+          const alightingMarker = L.circleMarker(alighting, {
+            radius: 6,
+            color: "#ef4444",
+            fillColor: "#ef4444",
+            fillOpacity: 0.95,
+            weight: 2,
+          }).bindPopup(`Alighting: ${journey.mac_hash || "Unknown"}`);
+
+          const odLine = L.polyline([boarding, alighting], {
+            color: "#60a5fa",
+            weight: 3,
+            opacity: 0.8,
+          });
+
+          journeyLayer.addLayer(boardingMarker);
+          journeyLayer.addLayer(alightingMarker);
+          journeyLayer.addLayer(odLine);
+          bounds.push(boarding, alighting);
+        });
+
+        if (bounds.length) {
+          map.fitBounds(bounds, { padding: [24, 24] });
+        }
+      }
+
       async function fetchMatrix() {
         statusEl.textContent = "Polling /api/matrix...";
 
@@ -311,9 +359,11 @@
           const payload = await response.json();
           const journeys = Array.isArray(payload) ? payload : [];
           renderTable(journeys);
+          renderJourneyMap(journeys);
           statusEl.textContent = `Online | ${journeys.length} completed journeys`;
         } catch (error) {
           renderTable([]);
+          journeyLayer.clearLayers();
           statusEl.textContent = `Offline | ${error.message}`;
         }
       }

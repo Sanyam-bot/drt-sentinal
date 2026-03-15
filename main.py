@@ -1,14 +1,26 @@
+import asyncio
 from collections import defaultdict
+from dotenv import load_dotenv
+import os
 import time
-from typing import Dict, Generator, List, Literal, Tuple
+from typing import Dict, Generator, List, Literal, Optional, Tuple
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from google.transit import gtfs_realtime_pb2
 from pydantic import BaseModel
-from sqlalchemy import Column, Index, Integer, String, create_engine
+import requests
+from sqlalchemy import Column, Float, Index, Integer, String, create_engine, func
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 DATABASE_URL = "sqlite:///./drt_telemetry.db"
+
+# GTFS-RT runtime configuration
+load_dotenv()
+ACTIVE_FLEET_ID = "8547"  # The fleet ID of the bus we're tracking. Change this to match your target bus.
+DRT_API_KEY = os.getenv("DRT_API_KEY", "")
+DRT_VEHICLE_POSITIONS_URL = "https://drtonline.durhamregiontransit.com/gtfsrealtime/VehiclePositions"
+GTFS_POLL_INTERVAL_SECONDS = 15
 
 engine = create_engine(
     DATABASE_URL,
@@ -16,6 +28,7 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+bus_poller_task: Optional[asyncio.Task] = None
 
 
 class TelemetryLog(Base):
@@ -30,6 +43,20 @@ class TelemetryLog(Base):
 
     __table_args__ = (
         Index("ix_telemetry_logs_pseudo_mac_timestamp", "pseudo_mac", "timestamp"),
+    )
+
+
+class BusLocationLog(Base):
+    __tablename__ = "bus_location_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(Integer, nullable=False, index=True)
+    bus_id = Column(String, nullable=False, index=True)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+
+    __table_args__ = (
+        Index("ix_bus_location_logs_bus_id_timestamp", "bus_id", "timestamp"),
     )
 
 
@@ -182,9 +209,99 @@ def calculate_od_matrix(
     return valid_journeys
 
 
+def fetch_active_bus_position() -> Optional[Tuple[float, float]]:
+    headers = {}
+    if DRT_API_KEY:
+        headers["x-api-key"] = DRT_API_KEY
+
+    response = requests.get(DRT_VEHICLE_POSITIONS_URL, headers=headers, timeout=10)
+    response.raise_for_status()
+
+    feed = gtfs_realtime_pb2.FeedMessage()
+    feed.ParseFromString(response.content)
+
+    for entity in feed.entity:
+        if not entity.HasField("vehicle"):
+            continue
+
+        vehicle = entity.vehicle
+        if not vehicle.HasField("position"):
+            continue
+
+        candidates = {
+            entity.id,
+            vehicle.vehicle.id if vehicle.HasField("vehicle") else "",
+            vehicle.vehicle.label if vehicle.HasField("vehicle") else "",
+            vehicle.vehicle.license_plate if vehicle.HasField("vehicle") else "",
+        }
+        if ACTIVE_FLEET_ID in candidates:
+            return (
+                float(vehicle.position.latitude),
+                float(vehicle.position.longitude),
+            )
+
+    return None
+
+
+def poll_and_store_bus_location_once() -> None:
+    position = fetch_active_bus_position()
+    if position is None:
+        return
+
+    db = SessionLocal()
+    try:
+        now_ts = int(time.time())
+        db.add(
+            BusLocationLog(
+                timestamp=now_ts,
+                bus_id=ACTIVE_FLEET_ID,
+                latitude=position[0],
+                longitude=position[1],
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+async def bus_location_poller_loop() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(poll_and_store_bus_location_once)
+        except Exception:
+            # Keep poller alive even if network/API is temporarily unavailable.
+            pass
+
+        await asyncio.sleep(GTFS_POLL_INTERVAL_SECONDS)
+
+
+def find_closest_bus_location(db: Session, event_timestamp: int, bus_id: str) -> Optional[BusLocationLog]:
+    return (
+        db.query(BusLocationLog)
+        .filter(BusLocationLog.bus_id == bus_id)
+        .order_by(func.abs(BusLocationLog.timestamp - int(event_timestamp)))
+        .first()
+    )
+
+
 @app.on_event("startup")
-def on_startup() -> None:
+async def on_startup() -> None:
+    global bus_poller_task
+
     Base.metadata.create_all(bind=engine)
+    bus_poller_task = asyncio.create_task(bus_location_poller_loop())
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    global bus_poller_task
+
+    if bus_poller_task is not None:
+        bus_poller_task.cancel()
+        try:
+            await bus_poller_task
+        except asyncio.CancelledError:
+            pass
 
 
 @app.post("/api/ingest")
@@ -222,4 +339,21 @@ def matrix(db: Session = Depends(get_db)) -> List[dict]:
     )
 
     passenger_tracks = clean_telemetry_data(raw_data)
-    return calculate_od_matrix(passenger_tracks)
+    journeys = calculate_od_matrix(passenger_tracks)
+
+    enriched_journeys: List[dict] = []
+    for journey in journeys:
+        boarding_point = find_closest_bus_location(db, journey["boarding_time"], ACTIVE_FLEET_ID)
+        alighting_point = find_closest_bus_location(db, journey["alighting_time"], ACTIVE_FLEET_ID)
+
+        enriched_journeys.append(
+            {
+                **journey,
+                "boarding_lat": boarding_point.latitude if boarding_point else None,
+                "boarding_lon": boarding_point.longitude if boarding_point else None,
+                "alighting_lat": alighting_point.latitude if alighting_point else None,
+                "alighting_lon": alighting_point.longitude if alighting_point else None,
+            }
+        )
+
+    return enriched_journeys
