@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DRT Sentinel Operator View</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      :root {
+        --bg: #060b14;
+        --panel: #0d1625;
+        --panel-2: #101d31;
+        --line: #243851;
+        --text: #e8f2ff;
+        --muted: #8aa4bf;
+        --accent: #2bc4ff;
+        --accent-2: #3df5b6;
+        --danger: #ff6f91;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "Rajdhani", "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 10% 8%, rgba(43, 196, 255, 0.13), transparent 38%),
+          radial-gradient(circle at 92% 14%, rgba(61, 245, 182, 0.12), transparent 34%),
+          linear-gradient(160deg, #050913 0%, #071122 45%, #040913 100%);
+      }
+
+      .frame {
+        width: min(1400px, 96vw);
+        margin: 1rem auto;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(10, 20, 36, 0.8);
+        backdrop-filter: blur(5px);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+        overflow: hidden;
+      }
+
+      .topbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        padding: 0.8rem 1rem;
+        border-bottom: 1px solid var(--line);
+        background: linear-gradient(90deg, rgba(43, 196, 255, 0.08), transparent);
+      }
+
+      .title {
+        margin: 0;
+        font-size: 1.35rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .status {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.78rem;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 0.25rem 0.7rem;
+        background: rgba(16, 29, 49, 0.65);
+      }
+
+      .split {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        min-height: calc(100vh - 110px);
+      }
+
+      .panel {
+        background: var(--panel);
+      }
+
+      .left {
+        border-right: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+      }
+
+      .panel-header {
+        margin: 0;
+        padding: 0.75rem 1rem;
+        background: var(--panel-2);
+        border-bottom: 1px solid var(--line);
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-size: 1rem;
+      }
+
+      .table-wrap {
+        overflow: auto;
+        height: 100%;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.95rem;
+      }
+
+      th,
+      td {
+        text-align: left;
+        padding: 0.6rem 0.7rem;
+        border-bottom: 1px solid var(--line);
+        white-space: nowrap;
+      }
+
+      th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: #132238;
+        color: #b8d2ea;
+      }
+
+      tbody tr:nth-child(even) {
+        background: rgba(16, 29, 49, 0.46);
+      }
+
+      tbody tr:hover {
+        background: rgba(43, 196, 255, 0.1);
+      }
+
+      .door {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 0.78rem;
+        padding: 0.14rem 0.44rem;
+        border-radius: 999px;
+        border: 1px solid;
+      }
+
+      .door.front {
+        color: var(--accent-2);
+        border-color: rgba(61, 245, 182, 0.45);
+        background: rgba(61, 245, 182, 0.09);
+      }
+
+      .door.rear {
+        color: var(--accent);
+        border-color: rgba(43, 196, 255, 0.45);
+        background: rgba(43, 196, 255, 0.1);
+      }
+
+      .door.unknown {
+        color: var(--danger);
+        border-color: rgba(255, 111, 145, 0.45);
+        background: rgba(255, 111, 145, 0.12);
+      }
+
+      .empty {
+        color: var(--muted);
+        text-align: center;
+        font-style: italic;
+      }
+
+      #map {
+        width: 100%;
+        height: 100%;
+        min-height: 560px;
+      }
+
+      @media (max-width: 1000px) {
+        .split {
+          grid-template-columns: 1fr;
+        }
+
+        .left {
+          border-right: none;
+          border-bottom: 1px solid var(--line);
+          min-height: 360px;
+        }
+
+        #map {
+          min-height: 380px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="frame">
+      <header class="topbar">
+        <h1 class="title">DRT Sentinel Operator Dashboard</h1>
+        <span id="status" class="status">Connecting to api...</span>
+      </header>
+
+      <section class="split">
+        <div class="panel left">
+          <h2 class="panel-header">Live Origin-Destination Matrix</h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Passenger ID (MAC Hash)</th>
+                  <th>Boarding Door</th>
+                  <th>Boarding Time</th>
+                  <th>Alighting Door</th>
+                  <th>Alighting Time</th>
+                </tr>
+              </thead>
+              <tbody id="matrixBody">
+                <tr>
+                  <td class="empty" colspan="5">Waiting for completed journeys...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2 class="panel-header">System Concept Map (Oshawa, Ontario)</h2>
+          <div id="map"></div>
+        </div>
+      </section>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script>
+      const API_URL = "http://localhost:8000/api/matrix";
+      const POLL_INTERVAL_MS = 10000;
+      const statusEl = document.getElementById("status");
+      const matrixBody = document.getElementById("matrixBody");
+
+      const map = L.map("map").setView([43.8971, -78.8658], 13);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors",
+      }).addTo(map);
+
+      // Static concept markers until live GTFS coordinates are integrated.
+      L.marker([43.8992, -78.8688]).addTo(map).bindPopup("Front Door").openPopup();
+      L.marker([43.8948, -78.8623]).addTo(map).bindPopup("Rear Door");
+
+      function toLocalTime(unixTimestamp) {
+        if (typeof unixTimestamp !== "number") {
+          return "-";
+        }
+
+        return new Date(unixTimestamp * 1000).toLocaleString();
+      }
+
+      function doorClass(door) {
+        const value = (door || "Unknown").toLowerCase();
+        if (value === "front") {
+          return "front";
+        }
+        if (value === "rear") {
+          return "rear";
+        }
+        return "unknown";
+      }
+
+      function renderTable(journeys) {
+        if (!journeys.length) {
+          matrixBody.innerHTML = '<tr><td class="empty" colspan="5">No completed journeys found.</td></tr>';
+          return;
+        }
+
+        matrixBody.innerHTML = journeys
+          .map((journey) => {
+            const boardedAt = journey.boarded_at || "Unknown";
+            const alightedAt = journey.alighted_at || "Unknown";
+
+            return `
+              <tr>
+                <td>${journey.mac_hash || "-"}</td>
+                <td><span class="door ${doorClass(boardedAt)}">${boardedAt}</span></td>
+                <td>${toLocalTime(journey.boarding_time)}</td>
+                <td><span class="door ${doorClass(alightedAt)}">${alightedAt}</span></td>
+                <td>${toLocalTime(journey.alighting_time)}</td>
+              </tr>
+            `;
+          })
+          .join("");
+      }
+
+      async function fetchMatrix() {
+        statusEl.textContent = "Polling /api/matrix...";
+
+        try {
+          const response = await fetch(API_URL);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const payload = await response.json();
+          const journeys = Array.isArray(payload) ? payload : [];
+          renderTable(journeys);
+          statusEl.textContent = `Online | ${journeys.length} completed journeys`;
+        } catch (error) {
+          renderTable([]);
+          statusEl.textContent = `Offline | ${error.message}`;
+        }
+      }
+
+      fetchMatrix();
+      setInterval(fetchMatrix, POLL_INTERVAL_MS);
+    </script>
+  </body>
+</html>
